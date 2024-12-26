@@ -1,0 +1,17 @@
+[package]
+name = "smgf"
+version = "0.1.0"
+edition = "2021"
+authors = ["Leo Lahti leo.lahti1@gmail.com"]
+description = "Stratified media Green's functions for electromagnetics"
+repository = "https://github.com/TileHalo/smgf"
+
+license = "GPL-3.0"
+# Using latex in the docs to display formulas
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "katex-header.html" ]
+
+[dependencies]
+
+[dev-dependencies]
+assert_approx_eq = "1.1.0"
