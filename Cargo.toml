@@ -12,6 +12,7 @@ license = "GPL-3.0"
 rustdoc-args = [ "--html-in-header", "katex-header.html" ]
 
 [dependencies]
+scilib = "1.0.0"
 
 [dev-dependencies]
 assert_approx_eq = "1.1.0"
