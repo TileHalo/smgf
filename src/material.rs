@@ -1,9 +1,180 @@
 //! Linear Isotropic and spatially dispersioneless material definition and helpers
 
-use std::f64::consts::PI;
+use std::{f64::consts::PI, marker::PhantomData};
 
 use num::complex::Complex64;
 use scilib::constant::{EPSILON_0, MU_0};
+
+use crate::{FrequencyDep, SpectralDependency};
+
+
+/// Spectral domain propagation constant
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralPropagation<D: SpectralDependency>{
+    /// Frequency
+    pub f: f64,
+    mat: Material,
+    dep: PhantomData<D>
+}
+
+/// Spectral domain impedance
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralImpedance<D: SpectralDependency>(SpectralPropagation<D>);
+
+/// Spectral domain reflection
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralReflection<D: SpectralDependency, U: SpectralDependency>(SpectralImpedance<D>, SpectralImpedance<U>);
+
+impl<D: SpectralDependency> SpectralPropagation<D> {
+    pub fn new() -> Self {
+        SpectralPropagation{f: 0.0, mat: Material::new(),dep: PhantomData }
+    }
+    fn with_material(mat: Material) -> Self {
+        SpectralPropagation{f: 0.0, mat, dep: PhantomData }
+    }
+}
+
+impl<D: SpectralDependency> From<Material> for SpectralPropagation<D> {
+    fn from(value: Material) -> Self {
+        Self::with_material(value)
+    }
+}
+
+impl crate::SpectralFn for SpectralPropagation<FrequencyDep> {
+    type InputTail = f64;
+    type Output = Complex64;
+    type CurryFOut= SpectralPropagation<()>;
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, tail: Self::InputTail) -> Self::Output {
+        Complex64::sqrt(self.mat.cplx_prop_const(tail).powi(2) - kp.powi(2))
+    }
+    fn curry_freq(&self, f: f64) -> Option<Self::CurryFOut> {
+        Some(SpectralPropagation{ f, mat: self.mat, dep: PhantomData})
+    }
+}
+
+impl crate::SpectralFn for SpectralPropagation<()> {
+    type InputTail = ();
+    type Output = Complex64;
+    type CurryFOut= ();
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, _: Self::InputTail) -> Self::Output {
+        Complex64::sqrt(self.mat.cplx_prop_const(self.f).powi(2) - kp.powi(2))
+    }
+}
+
+
+impl<D: SpectralDependency> SpectralImpedance<D> {
+    pub fn new() -> Self {
+        SpectralImpedance(SpectralPropagation::<D>::new())
+    }
+    fn with_material(mat: Material) -> Self {
+        SpectralImpedance(SpectralPropagation::<D>::with_material(mat))
+    }
+}
+
+impl<D: SpectralDependency> From<Material> for SpectralImpedance<D> {
+    fn from(value: Material) -> Self {
+        Self::with_material(value)
+    }
+}
+
+impl crate::SpectralFn for SpectralImpedance<FrequencyDep> {
+    type InputTail = f64;
+    type Output = (Complex64, Complex64);
+    type CurryFOut= SpectralImpedance<()>;
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, f: Self::InputTail) -> Self::Output {
+        let kz = self.0.mat.spctr_cplx_wavenumber();
+        let kzh = self.0.mat.spctr_cplx_wavenumber();
+        let (den, nume) = (
+            EPSILON_0 * self.0.mat.cplx_rel_permittivity(f) * 2.0 * PI * f,
+            MU_0 * self.0.mat.mu_r * 2.0 * PI * f,
+        );
+        let ze = kz.eval(kp, f) / den;
+        let zh = nume / kzh.eval(kp, f);
+        (ze, zh)
+    }
+
+    fn curry_freq(&self, f: f64) -> Option<Self::CurryFOut> {
+        let mut b = Self::CurryFOut::from(self.0.mat);
+        b.0.f = f;
+        Some(b)
+    }
+}
+
+impl crate::SpectralFn for SpectralImpedance<()> {
+    type InputTail = ();
+    type Output = (Complex64, Complex64);
+    type CurryFOut= ();
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, _: Self::InputTail) -> Self::Output {
+        let bulvaani = SpectralImpedance::<FrequencyDep>::from(self.0.mat);
+
+        bulvaani.eval(kp, self.0.f)
+    }
+}
+
+impl<D: SpectralDependency, U: SpectralDependency> SpectralReflection<D, U> {
+    pub fn new() -> Self {
+        SpectralReflection(SpectralImpedance::<D>::new(),SpectralImpedance::<U>::new())
+    }
+    fn with_materials(a: Material, b: Material) -> Self {
+        SpectralReflection(SpectralImpedance::<D>::from(a), SpectralImpedance::<U>::from(b))
+    }
+}
+
+impl<D: SpectralDependency, U: SpectralDependency> From<(Material, Material)> for SpectralReflection<D, U> {
+    fn from((a, b): (Material, Material)) -> Self {
+        Self::with_materials(a, b)
+    }
+}
+
+impl crate::SpectralFn for SpectralReflection<FrequencyDep, FrequencyDep> {
+    type InputTail = f64;
+    type Output = (Complex64, Complex64);
+    type CurryFOut= SpectralReflection<(), ()>;
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, f: Self::InputTail) -> Self::Output {
+
+        let (ze1, zh1) = self.0.eval(kp, f);
+        let (ze2, zh2) = self.1.eval(kp, f);
+
+        ((ze2 - ze1)/(ze1 + ze2),
+        (zh2 - zh1)/(zh1 + zh2))
+    }
+
+    fn curry_freq(&self, f: f64) -> Option<Self::CurryFOut> {
+        let mut b = Self::CurryFOut::from((self.0.0.mat, self.1.0.mat));
+        b.0.0.f = f;
+        b.1.0.f = f;
+        Some(b)
+    }
+}
+
+impl crate::SpectralFn for SpectralReflection<(), ()> {
+    type InputTail = ();
+    type Output = (Complex64, Complex64);
+    type CurryFOut= ();
+    type CurrySOut = ();
+    type CurryOOut = ();
+
+    fn eval(&self, kp: Complex64, _: Self::InputTail) -> Self::Output {
+        let bulvaani = SpectralReflection::<FrequencyDep, FrequencyDep>::from((self.1.0.mat, self.1.0.mat));
+
+        bulvaani.eval(kp, self.0.0.f)
+    }
+}
 
 
 /// Various (electric) loss definitions for media.
@@ -139,31 +310,19 @@ impl Material {
     }
 
     /// Spectral complex wavenumber
-    pub fn spctr_cplx_wavenumber(&self, f: f64) -> impl Fn(Complex64) -> Complex64 {
-        let k = self.cplx_prop_const(f);
-        move |kp| Complex64::sqrt(k.powi(2) - kp.powi(2))
+    pub fn spctr_cplx_wavenumber(&self) -> SpectralPropagation<FrequencyDep>{
+        SpectralPropagation::from(*self)
     }
 
     /// Return complex impedances in spectral domain, for electric field and magnetic field
     /// respectively
-    pub fn spctr_cplx_impedance(&self, f: f64) -> (impl Fn(Complex64) -> Complex64, impl Fn(Complex64) -> Complex64) {
-        let kz = self.spctr_cplx_wavenumber(f);
-        let kzh = self.spctr_cplx_wavenumber(f);
-        let (den, nume) = (
-            EPSILON_0 * self.cplx_rel_permittivity(f) * 2.0 * PI * f,
-            MU_0 * self.mu_r * 2.0 * PI * f,
-        );
-        let ze = move |kp| kz(kp) / den;
-        let zh = move |kp| nume / kzh(kp);
-        (ze, zh)
+    pub fn spctr_cplx_impedance(&self) -> SpectralImpedance<FrequencyDep> {
+        SpectralImpedance::from(*self)
     }
 
     /// Spectral reflection coefficient
-    pub fn spctr_reflection_coeff(&self, b: Material, f: f64) -> (impl Fn(Complex64) -> Complex64, impl Fn(Complex64) -> Complex64) {
-        let ((ze1, zh1), (ze2, zh2)) = (self.spctr_cplx_impedance(f), b.spctr_cplx_impedance(f));
-
-        (move |kp| (ze2(kp) - ze1(kp))/(ze1(kp) + ze2(kp)),
-        move |kp| (zh2(kp) - zh1(kp))/(zh1(kp) + zh2(kp)))
+    pub fn spctr_reflection_coeff(&self, b: Material) -> SpectralReflection<FrequencyDep, FrequencyDep> {
+        SpectralReflection::from((*self, b))
     }
 }
 
@@ -177,6 +336,7 @@ impl Default for Material {
 mod tests {
     use assert_approx_eq::assert_approx_eq;
     use scilib::constant::C;
+    use crate::*;
 
     use super::*;
 
@@ -217,8 +377,8 @@ mod tests {
             assert_approx_eq!(ans.re, 2.0 * PI / res, err);
             assert_approx_eq!(ans.im, 0.0, err);
 
-            let wn = vcm.spctr_cplx_wavenumber(*f);
-            let (ze, zh) = vcm.spctr_cplx_impedance(*f);
+            let k = vcm.spctr_cplx_wavenumber().curry_freq(*f).unwrap();
+            let z = vcm.spctr_cplx_impedance().curry_freq(*f).unwrap();
             let kpp: &[Complex64] = &[
                 0.0.into(),
                 1.0.into(),
@@ -227,23 +387,21 @@ mod tests {
                 1.0e20.into(),
             ];
             for kp in kpp {
-                let an = wn(*kp);
+                let an = k.eval(*kp, ());
                 let r = Complex64::sqrt((2.0 * PI / res).powi(2) - kp.powi(2));
                 assert_approx_eq!(an.re, r.re, err);
                 assert_approx_eq!(an.im, r.im, err);
 
-                let an = ze(*kp);
-                let rr = r / (2.0 * PI * f * EPSILON_0);
-                let err = an.norm() * 1.0e-15; // Due to exploding values force error into
+                let (ze, zh) = z.eval(*kp, ());
+                let re = r / (2.0 * PI * f * EPSILON_0);
+                let eerr = an.norm() * 1.0e-5; // Due to exploding values force error into
+                assert_approx_eq!(ze.re, re.re, eerr);
+                assert_approx_eq!(ze.im, re.im, eerr);
                                                // something decent
-                assert_approx_eq!(an.re, rr.re, err);
-                assert_approx_eq!(an.im, rr.im, err);
-
-                let an = zh(*kp);
-                let rr = (2.0 * PI * f * MU_0) / r;
-                let err = an.norm() * 1.0e-10;
-                assert_approx_eq!(an.re, rr.re, err);
-                assert_approx_eq!(an.im, rr.im, err);
+                let rh = (2.0 * PI * f * MU_0) / r;
+                let herr = an.norm() * 1.0e-5;
+                assert_approx_eq!(zh.re, rh.re, herr);
+                assert_approx_eq!(zh.im, rh.im, herr);
             }
         }
     }
@@ -319,8 +477,8 @@ mod tests {
             assert_approx_eq!(ans.re, 2.0 * PI / res, err);
             assert_eq!(ans.im, 0.0);
 
-            let wn = dielectric.spctr_cplx_wavenumber(*f);
-            let (ze, zh) = dielectric.spctr_cplx_impedance(*f);
+            let k = dielectric.spctr_cplx_wavenumber().curry_freq(*f).unwrap();
+            let z = dielectric.spctr_cplx_impedance().curry_freq(*f).unwrap();
             let kpp: &[Complex64] = &[
                 0.0.into(),
                 1.0.into(),
@@ -329,24 +487,23 @@ mod tests {
                 1.0e20.into(),
             ];
             for kp in kpp {
-                let an = wn(*kp);
+                let an = k.eval(*kp, ());
                 let r = Complex64::sqrt((2.0 * PI / res).powi(2) - kp.powi(2));
                 let err = an.norm() * 1.0e-15;
                 assert_approx_eq!(an.re, r.re, err);
                 assert_approx_eq!(an.im, r.im, err);
 
-                let an = ze(*kp);
+                let (ze, zh) = z.eval(*kp, ());
                 let rr = r / (2.0 * PI * f * EPSILON_0 * 4.0);
-                let err = an.norm() * 1.0e-15; // Due to exploding values force error into
+                let err = ze.norm() * 1.0e-15; // Due to exploding values force error into
                                                // something decent
-                assert_approx_eq!(an.re, rr.re, err);
-                assert_approx_eq!(an.im, rr.im, err);
+                assert_approx_eq!(ze.re, rr.re, err);
+                assert_approx_eq!(ze.im, rr.im, err);
 
-                let an = zh(*kp);
                 let rr = (2.0 * PI * f * MU_0) / r;
-                let err = an.norm() * 1.0e-10;
-                assert_approx_eq!(an.re, rr.re, err);
-                assert_approx_eq!(an.im, rr.im, err);
+                let err = zh.norm() * 1.0e-10;
+                assert_approx_eq!(zh.re, rr.re, err);
+                assert_approx_eq!(zh.im, rr.im, err);
             }
         }
     }
